@@ -13,7 +13,9 @@ loops thru a cycle of :
 * uses single sha256 bit hash for ids
 * uses an easy Proof-of-work [ 256 tries on average to get a block hashs with '00' leading bytes ]
 * uses node.js byte buffers for transactions and blocks
-* runs around 7000 tps on i5 laptop
+* runs around 7000 tps on i5 laptop [ uses a lot of ram ]
+* simple transactions - spend from one addr to one other addr with change [ uses vinps, vouts ]
+* blocks contain hashids of transactions, but not actual tx bodies
 
 ## Motivation
 
@@ -41,7 +43,16 @@ Using block extension areas, we can also include skip links to blocks much earli
 the process of walking back thru the links of transactions inputs and outputs all the way back to the initial 'genesis' block
 is like walking a DAG tree, as un-needed areas of the blockchain are skipped over.  These skip links are validated at block creation time by other nodes.   
 
-this is useful for clients which want to traverse the chain to make better proof of validity that SPV, and for nodes that use utxo bring forward above, so they can trace PoW to an arbitrary level back to the genesisi block. 
+This is useful for clients which want to traverse the chain to make better proof of validity than SPV, and for nodes that use utxo bring forward above, so they can trace PoW to an arbitrary level back to the genesis block. 
 
 Not implemented yet 
+
+## licence
+
+MIT use without restraint
+
+## Author
+
+gord anderson
+quantblog.wordpress.com
 
