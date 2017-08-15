@@ -1,0 +1,62 @@
+#!/bin/bash
+# backup to zz
+#
+ME=`whoami`
+#
+PWD=`pwd`
+NAM=$(basename $PWD)
+ZTS=`date +%Y%m%d_%H%M%S`
+ZFN=$NAM.$ZTS.tgz
+#
+rm -f `find . -name "*.o"`
+rm -f `find . -name "*.DS_Store"`
+# 
+cd ..
+tar -zcvf ./zz/$ZFN --exclude='node_modules' --exclude='.git' $NAM;
+cd -
+echo "zipped backup : ../zz/$ZFN"
+ls -la  ../zz/$ZFN
+
+MEDIBAS="/media/$ME"
+
+BAK1="$MEDIBAS/BAKSD32/zz"
+DST="$BAK1/$ZFN"
+if [ -d "$BAK1" ] ; then
+    echo "backup >>> flash : $DST"
+    cp ../zz/$ZFN $DST
+    ls -l $DST
+fi
+
+BAK2="$MEDIBAS/BIG64/zz"
+DST="$BAK2/$ZFN"
+if [ -d "$BAK2" ] ; then
+    echo "backup >>> flash : $DST"
+    cp ../zz/$ZFN $DST
+    ls -l $DST
+fi
+
+BAK="$MEDIBAS/BIGBAK/zz"
+DST="$BAK/$ZFN"
+if [ -d "$BAK" ] ; then
+    echo "backup >>> flash : $DST"
+    cp ../zz/$ZFN $DST
+    ls -l $DST
+fi
+
+BAK="$MEDIBAS/6386-C44F/zz"
+DST="$BAK/$ZFN"
+if [ -d "$BAK" ] ; then
+    echo "backup >>> usb drive : $DST"
+    cp ../zz/$ZFN $DST
+    ls -l $DST
+fi
+
+
+BAK="$MEDIBAS/red8/zz"
+DST="$BAK/$ZFN"
+if [ -d "$BAK" ] ; then
+    echo "backup >>> flash: $DST"
+    cp ../zz/$ZFN $DST
+    ls -l $DST
+fi
+
