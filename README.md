@@ -27,15 +27,21 @@ needed to bootstrap a new node.  eg. in Bitcoin the whole dataset is :
 * utxo of around 2GB [ ~50Mn txns ]
 * so unspent 'utxo' set is around 20% of transactions
 
-### Bring UTXO set forward
+## Bring UTXO set forward
 
-We can use much less data [5x smaller ] when spinning up a new node, 
-by bringing utxo set forward to nearer the front of the chain.
-
-The sim gathers old utxos and injects them into the blockchain in baches of ids, 
-so they are stamped into the block at block creation.
+We can use much less data [5x smaller ] when spinning up a new node, by bringing utxo set forward to nearer the front of the chain.  The sim gathers old utxos and injects them into the blockchain in baches of ids, so they are stamped into the block at block creation.
 
 These 'utxo catchup sections' are read when starting a new processing node -
-is. it only needs a provable list of utxos, not the complete history of all 
+ie. it only needs a provable list of utxos, not the complete history of all 
 spent transactions.
+
+## skip links [ todo ]
+
+Using block extension areas, we can also include skip links to blocks much earlier in the chain -
+the process of walking back thru the links of transactions inputs and outputs all the way back to the initial 'genesis' block
+is like walking a DAG tree, as un-needed areas of the blockchain are skipped over.  These skip links are validated at block creation time by other nodes.   
+
+this is useful for clients which want to traverse the chain to make better proof of validity that SPV, and for nodes that use utxo bring forward above, so they can trace PoW to an arbitrary level back to the genesisi block. 
+
+Not implemented yet 
 
