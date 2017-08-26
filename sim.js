@@ -1,10 +1,9 @@
-const R         = require('ramda');
 const crypto    = require('crypto');
-const bignum    = require('bignum');
 const assert    = require('assert');
 const ps        = require('process');
-const levelup   = require('levelup');
 const fs        = require('fs');
+const z         = require('./zutil.js');
+const db        = require('./db.js');
 
 /*
     mine & spend sim :
@@ -19,169 +18,34 @@ const fs        = require('fs');
     rinse n repeat
 */
 
-function clog(s)
-{
-    console.log(s || '');
-}
-
-function jlog(o)
-{
-    clog(JSON.stringify(o,null,'    '));
-}
-
-function hx(s)
-{
-    var hx  = crypto.createHash('sha256');
-    hx.update(s);
-    return hx.digest('hex'); 
-}
+const each      = z.each;
+const padn      = z.padn;
+const pct       = z.pct;
+const ts        = z.ts;
+const zshuffle  = z.zshuffle;
+const zsample   = z.zsample;
+const zrng      = z.zrng;
+const zpick     = z.zpick;
 
 
-function each(f,mp)
-{
-    // call f(v,k) on mp, an Array Map or Object
-
-    if (R.is(Array,mp))
-    {
-        for (var i in mp)
-            f(mp[i], i);
-        return;
-    }
-
-    if (R.is(Map,mp))
-    {
-        for (var [k, v] of mp)
-            f(v, k);
-        return;
-    }
-
-    assert(R.is(Object, mp), 'each expecting Object as hash');
-
-    R.forEachObjIndexed(f, mp);
-}
-
-
-
-function padn(s,k)
-{
-    var n=k || 8;
-    s = s+"";
-    while (s.length<n)
-        s=' '+s; 
-    return s;
-}
-
-function pct(a,b)
-{
-    return padn(Math.floor(100*a/b),3)+'%';
-}
-
-function ts()
-{
-    return new Date().getTime();
-}
-
-function test_rnd()
-{
-    // random bytes
-
-    var buf = crypto.randomBytes(32);
-    var tok = buf.toString('hex');
-    clog('rnd tok : '+tok);
-
-    // hash digest
-
-    var hsh256    = crypto.createHash('sha256');
-    hsh256.update('some data to hash');
-    clog('hsh256  : '+hsh256.digest('hex'));
-
-    clog('hsh256  : '+hx('some data to hash'));
-    clog('hsh256  : '+hx('some data to hash.'));
-}
-
-
-function ezrng(n)
-{
-    return Math.floor(Math.random()*n);         // weak random
-}
-
-function ezpick(rg)
-{
-    return rg[ezrng(rg.length)];
-}
-
-function ezshuffle(arr)
-{
-    var rg = R.clone(arr);
-
-    assert(rg.length<500,'slow to shuffle large array');
-
-    // fisher yates shuffle
-
-    var i = 0;
-    var j = 0;
-    var temp = null;
-
-    for (i=rg.length-1; i>0; i-=1) 
-    {
-        j=ezrng(i+1);
-    
-        temp = rg[i];
-        rg[i] = rg[j];
-        rg[j] = temp;
-    }
-
-    return rg;
-}
-
-function ezsample(arr, _n)
-{
-    var N=arr.length;
-    var n=Math.min(_n, N);    
-
-    if(n>Math.floor(N/5) && N<200)
-        return R.take(n, ezshuffle(arr));
-
-    //clog('>>');
-    //jlog('len: '+N+' n:'+n);
-
-    var rg=[];
-    var ids={};
-
-    function pick()
-    {
-        var i=ezrng(N);
-        while(ids[i])        
-        {
-            i=ezrng(N);
-        }
-        ids[i]=1;
-        rg.push(arr[i]);
-    }
-    R.times(pick, n);
-
-    //clog('<<');
-
-    return rg;
-}
 
 function new_addr()
 {
     var nams = ['gord','john','paul','ring','stan','king','julz','lulu','tina','mine','hodl'];
 
-    var swho = ezpick(nams);
-    var snum = 1000+ezrng(5000);
+    var swho = zpick(nams);
+    var snum = 1000+zrng(5000);
     var snam = swho+'_'+snum;
 
-    var hsh = hx(snam);
+    var hsh = z.hx(snam);
 
     if (addrs[hsh])
         return new_addr();  // pick another
 
     addrs[hsh] = snam;
 
-    //clog('new addr : '+snam);
-    //clog('     hsh : '+hsh);
+    //z.log('new addr : '+snam);
+    //z.log('     hsh : '+hsh);
 
     if (swho=='mine')
     {
@@ -199,99 +63,18 @@ function new_addr()
 
 function init_users()
 {
-    R.times(new_addr, NUM_ADDRS);
-    addrids=R.keys(addrs);
+    z.times(new_addr, NUM_ADDRS);
+    addrids=z.keys(addrs);
 
     //jlog(addrs);
 
-    var ns = R.uniq(R.values(addrs).sort());
-    var ps = R.uniq(R.keys(addrs).sort());
+    var ns = z.uniq(z.values(addrs).sort());
+    var ps = z.uniq(z.keys(addrs).sort());
     assert(ps.length==NUM_ADDRS, 'bad num uniq add hashes');
     assert(ns.length==NUM_ADDRS, 'bad num uniq addr names');
 
     //jlog(miners);
-    clog('uniq miners    : '+R.uniq(R.values(miners)).length);
-}
-
-
-function ppBuf(_sz)
-{
-    // push-pull buffer : maintains an offset for reading/writing
-
-    var sz  = _sz;
-    var bf  = Buffer.alloc(sz);
-    var p   = 0;                
-
-    var ppb = 
-    {
-        length : sz,
-        buff : bf,
-
-        pos : function()
-        {
-            return p;
-        },
-
-        // push / write
-
-        push4 : function(v)
-        {
-            bf.writeUInt32LE(v, p);
-            p+=4;
-        },
-
-        push8 : function(v)
-        {
-            var bv = bignum(v).toBuffer({endian:'little',size:8});
-            bv.copy(bf, p); 
-            p+=bv.length;
-            assert(bv.length==8, 'bad val len');
-        },
-
-        pushHx : function(hx)
-        {
-            var bx = Buffer.from(hx, 'hex');
-            bx.copy(bf, p); 
-            p+=bx.length;
-            assert(bx.length==32, 'bad hash len');
-        },
-        pushAddr : function(addr)
-        {
-            var bx = Buffer.from(addr, 'hex');
-            bx.copy(bf, p); 
-            p+=bx.length;
-            assert(bx.length==32, 'bad addr len');
-        },
-        pushSign : function(sgn)
-        {
-            var bx = Buffer.from(sgn, 'hex');
-            bx.copy(bf, p); 
-            p+=bx.length;
-            assert(bx.length==64, 'bad sign len');
-        },
-        pushBuf: function(bx)
-        {
-            bx.copy(bf, p); 
-            p+=bx.length;
-        },
-
-        // position
-
-        posIncr: function(k)
-        {
-            p+=k;
-            assert(p<=bf.length,'bad posIncr');
-        },
-        posDecr: function(k)
-        {
-            p-=k;
-            assert(p>=0,'bad posDecr');
-        },
-
-        // pull / read
-        
-    };
-    return ppb;
+    z.log('uniq miners    : '+z.uniq(z.values(miners)).length);
 }
 
 
@@ -303,13 +86,16 @@ if (ps.argv.length>2)
     NREPS=parseInt(ps.argv[2]);
 assert(NREPS>0);
 assert(NREPS<1e5);
-clog('NREPS : '+NREPS);
+z.log('NREPS : '+NREPS);
 
-const NTAIL     = 0.9*NREPS;        // tail of the chain, where utxos are less prevalent 
+const TAIL      = 0.9;              // tail part of the chain, where utxos are less prevalent 
 const MAX_BLTXN = 3000;
 const NUM_ADDRS = 5*NREPS;
 const DB_LDB    = 0;                // use ldb storage
 const reward    = 10000;            // coinbase reward for mining a block - currency injection
+
+const BL_TXNS   = 0x10000000;
+const BL_CUXP   = 0x20000000;
 
 
 var addrs   = {};                   // addr hash -> addr name  // for easy debug
@@ -317,13 +103,13 @@ var addrids = [];
 var miners  = {};
 var minerids= [];
 var wallets = new Map();            // addr -> tid  : unspent txids for active users [ remove when spent ]
-var hodlers = {};                   // addr map of people who never spend
+var hodlers = {};                   // addr map of people who hardly ever spend
 
 
 var blknum  = 0;
 var ntxmined= 0;
 
-var txns    = {};                   // tid -> tx
+var txns    = new Map();            // tid -> tx
 var txbln   = {};                   // tid -> blknum
 
 var blks    = {};                   // bid -> block buff
@@ -336,69 +122,6 @@ var utxids  = [];                   // randomly sorted utxos - for each spend si
 var bltxcnt = {};                   // bln -> ntx : block tx count
 
 
-// DB
-
-
-var db = {};
-
-function db_init()
-{
-    function db_init_ldb()
-    {
-        assert(fs.existsSync('../ldb/'),'ERR opening LDB dir');
-
-        db.txn   = levelup('../ldb/ldb_txn');
-        db.txnby = levelup('../ldb/ldb_txnby');
-        db.blkby = levelup('../ldb/ldb_blkby');
-        db.blkid = levelup('../ldb/ldb_blkid');
-    }
-
-    function db_init_pg()
-    {
-    }
-
-    if (DB_LDB)
-        db_init_ldb();
-    else
-        db_init_pg();
-}
-
-function db_save_block(blid, blknum, blby)
-{
-if (DB_LDB)
-{
-    db.blkby.put(blid,   blby,   onerrlog('db bad write blkby'));
-    db.blkid.put(blknum, blid,   onerrlog('db bad write blkid'));
-}
-else
-{
-
-}
-}
-
-function db_save_tx(tid, tx, txb)
-{
-if (DB_LDB)
-{
-    db.txn.put(  tid, tx,  onerrlog('db bad write txn'));
-    db.txnby.put(tid, txb, onerrlog('db bad write txnby'));
-}
-}
-
-function db_close()
-{
-if (DB_LDB)
-{
-    return;         //pthread mutex busy issue
-    db.txn.close();
-    db.txnby.close();
-    db.blkby.close();
-    db.blkid.close();
-}
-else
-{
-}
-}
 
 function onerrlog(_s)
 {
@@ -406,26 +129,26 @@ function onerrlog(_s)
     return function(err)
     {
         if (err) 
-            return clog('ERR : '+s);
+            return z.log('ERR : '+s);
     }
 }
 
 
 function rand_miner()
 {
-    return ezpick(minerids);
+    return zpick(minerids);
 }
 
 function rand_user()
 {
-    return ezpick(addrids);
+    return zpick(addrids);
 }
 
 function rand_txinp()
 {
     if (!utxids.length)
     {
-        //clog('no utxids');
+        //z.log('no utxids');
         return 0;
     }
     return utxids.pop(); 
@@ -433,7 +156,8 @@ function rand_txinp()
 
 function tx_spent(tid, i)
 {
-    var tx = txns[tid];
+    //var tx = txns.get(tid);
+    var tx = utxos.get(tid);
     assert(tx,'no such tx : '+tid);
 
     if (!tx.spent)
@@ -442,11 +166,11 @@ function tx_spent(tid, i)
 
     // update utxo
 
-    var nspt = R.keys(tx.spent).length;
+    var nspt = z.keys(tx.spent).length;
     if (nspt==tx.vouts.length)
     {
         utxos.delete(tid)       // all outputs are spent
-        delete txns[tid];       // remove spent transactions to save RAM
+        txns.delete(tid);       // remove spent transactions to save RAM
     }
 }
 
@@ -468,7 +192,6 @@ function tx_first_unspent(tx)
 {
     for (var i in tx.vouts)
     {
-        var vo = tx.vouts[i];
         if (!tx.spent[i])
             return i;
     }
@@ -478,7 +201,7 @@ function tx_first_unspent(tx)
 
 function rand_spend_val(vv)
 {
-    var fr = ezpick([100, 20, 10, 5, 2, 1]);
+    var fr = zpick([100, 20, 10, 5, 2, 1]);
     var v = parseInt(vv/fr);
     if (v<=0)
         v=vv;
@@ -503,7 +226,7 @@ function rand_addr64()
 
 function rand_spend()
 {
-    //clog('rand_spend');
+    //z.log('rand_spend');
 
     // find an input, a user, send some valu
 
@@ -512,7 +235,8 @@ function rand_spend()
     var txi = rand_txinp();
     if (!txi)
         return;
-    var txib= txns[txi];
+    //var txib= txns.get(txi);
+    var txib= utxos.get(txi);
     assert(txib, 'no txn for : '+txi);
 
     var vn  = tx_first_unspent(txib);
@@ -549,7 +273,7 @@ function rand_spend()
 
     var nmfr = addrs[vo.addr];
     var nmto = addrs[to];
-    //clog('spend : '+nmfr+' > '+nmto+'  : '+padn(v));
+    //z.log('spend : '+nmfr+' > '+nmto+'  : '+padn(v));
 
     cash_flow(nmfr, -v);
     cash_flow(nmto, v);
@@ -573,7 +297,7 @@ function tx_coinbase(mnr)
     var vo0 = vout_make(mnr, reward);
     var h   = tx_make([], [vo0]);
 
-    //clog('coinbase : '+addrs[mnr]+' : '+h);
+    //z.log('coinbase : '+addrs[mnr]+' : '+h);
 
     cash_flow(addrs[mnr], reward);
 
@@ -582,17 +306,72 @@ function tx_coinbase(mnr)
     return h;
 }
 
+
+function blk_catchups()
+{
+    if (!catchups.length)
+        return {};
+
+    var cx = catchups.pop();
+    z.log('     CXUP      : '+padn(cx.ntxs,6));
+
+    //              flags, nbyts, blknum, nutxs, [ utxi1 .. utxin ]
+
+    var bl=0;
+    bl += 4*4;
+    bl += 4*z.keys(cx.bltxs).length;
+    bl += 32*cx.ntxs;
+
+    var bf=z.Buf(bl);
+
+    bf.push4(BL_CUXP);      // flags
+    bf.push4(cx.len);       // nbyts
+    bf.push4(blknum);       // blknum
+    bf.push4(cx.ntxs);      // ntxns
+
+    function blxs(txids, nblk)
+    {
+        bf.push4(txids.length);
+
+        function ptx(tid)
+        {
+            bf.pushHx(tid);
+        }
+        each(ptx, txids);
+    }
+    each(blxs, cx.bltxs);
+
+    cx.bf=bf;
+    cx.blen = bl;
+
+    z.log('     len    : '+bl);
+
+    return cx;
+}
+
+function blk_prev()
+{
+    if (blkchain.length)
+        return blkchain[blkchain.length-1];
+    return '0000000000000000000000000000000000000000000000000000000000000000';
+}
+
 function blk_mine()
 {
-    // bid = hx( pow, blkprev, flags, blknum, nbyts, ntxns, [txid1 .. txidn], nonce )           
-    // block contains txids only, not tx bodies !
+    // bid = z.hx( pow, nonce, blkprev,
+    //              flags, nbyts, blknum, ntxns, [ txid1 .. txidn ]     // transaction ids
+    //              flags, nbyts, blknum, nutxs, [ utxi1 .. utxin ]     // utxo catchup ids
+    //         )
+
 
     var tsbl=ts();
 
     var mnr = rand_miner();
-    //clog('mine  :           > '+miners[mnr]+'  : '+padn(reward));
+    //z.log('mine  :           > '+miners[mnr]+'  : '+padn(reward));
 
-    var txcb=tx_coinbase(mnr);
+    var blkprev = blk_prev();
+    var txcb    = tx_coinbase(mnr);
+    var cx      = blk_catchups();
 
     // add all from waiting txpool
 
@@ -600,40 +379,40 @@ function blk_mine()
     txpool  = [];
     txs.push(txcb); 
 
-    // calc buf len
+    // calc buf len & fill buff
 
     var len = 0;
-    len += 32;      // pow
-    len += 32;      // blkprev
-    len +=  4;      // flags
-    len +=  4;      // blknum
-    len +=  4;      // nbyts
-    len +=  4;      // ntxns
+    len += 3*32;
+    len += 4*4;
     len += 32*txs.length;
-    len += 32;      // nonce
+    len += cx.blen || 0;
 
-    // fill buf
+    var bf=z.Buf(len);
 
-    var bf=ppBuf(len);
+    bf.posIncr(32);                 // empty nonce
+    bf.pushHx(blkprev);             // previous block id
 
-    bf.posIncr(32);                 // blkprev      //todo keep hashid of prev blocks
-    bf.push4(0);                    // flags
-    bf.push4(blknum);               // blknum
+    bf.push4(BL_TXNS);              // flags
     bf.push4(len);                  // nbyts
+    bf.push4(blknum);               // blknum
     bf.push4(txs.length);           // ntxns
 
-    for (var i in txs)
+    function ptx(tid)
     {
-        var txid  = txs[i];
+        bf.pushHx(tid);
 
-        //clog('  tx      : '+txid);
+        txbln[tid] = blknum;             
 
-        bf.pushHx(txid);                // only txid in block
+        var tx = txns.get(tid);
+        assert(tx,'no tx for tid : '+tid);
 
-        txbln[txid] = blknum;             
-        utxos.set(txid, txns[txid]);
+        utxos.set(tid, tx);
     }
-    bf.posIncr(32);                     // empty nonce
+    each(ptx, txs);
+
+    if (cx && cx.bf)
+        bf.pushBuf(cx.bf.buff);
+
 
     // calc pow by changing nonce, until top bytes are 0
 
@@ -644,18 +423,16 @@ function blk_mine()
     function dowork()
     {
         nonce = crypto.randomBytes(32);
+        nonce.copy(bf.buff, 0); 
 
-        bf.posDecr(32);
-        bf.pushBuf(nonce);
-        
+        pow = z.hx(bf.buff);
+
         ntries++;
     }
 
     function pow_ok()
     {
-        pow = hx(bf.buff);
-        var bok = pow.match('^00');       // 1/256 chance
-        return bok;
+        return pow.match('^00');       // 1/256 chance
     }
 
     dowork();
@@ -665,37 +442,38 @@ function blk_mine()
 
     // calc block hash id
 
-    var blb=ppBuf(32+bf.length);
+    var blb=z.Buf(32+bf.length);
     blb.pushHx(pow);
     blb.pushBuf(bf.buff);
-    var blid=hx(blb.buff);
+    var blid=z.hx(blb.buff);
 
     blks[blid]={bid:blid, byts:blb.buff, txs:txs};
 
 if(0)
 {
-    clog('  pow     : '+pow+' : '+ntries);
-    //clog('  block   : '+blb.buff.toString('hex'));
-    clog('  blknum  : '+blknum);
-    clog('  blid    : '+blid);
+    z.log('  pow     : '+pow+' : '+ntries);
+    //z.log('  block   : '+blb.buff.toString('hex'));
+    z.log('  blknum  : '+blknum);
+    z.log('  blid    : '+blid);
 }
 
     //save and send block
 
     blkchain.push(blid);
 
-    //clog('blockchain :'); jlog(blkchain);
-    //clog('txbln :');      jlog(txbln);
+    //z.log('blockchain :'); jlog(blkchain);
+    //z.log('txbln :');      jlog(txbln);
 
     var dts=ts()-tsbl+1;
     var tps=1000*(txs.length/dts);
-    clog('block : '+padn(blknum,6)+' : '+padn(txs.length,6)+' : '+padn(dts));
+    z.log('block : '+padn(blknum,6)+' : '+padn(txs.length,6)+' : '+padn(dts));
 
-    db_save_block(blid, blknum, blb.buff);
+    db.save_block(blid, blknum, blb.buff);
 
     ntxmined+=txs.length;
     bltxcnt[blknum]=txs.length;
     blknum++;
+
 }
 
 function vinp_make(txid, idx, blk, bid, addr, sign)
@@ -718,7 +496,7 @@ function vouts_bylen(vos)
 function vouts_byts(vos)
 {
     // ( addr, val )
-    var bf  = ppBuf(vouts_bylen(vos));
+    var bf  = z.Buf(vouts_bylen(vos));
 
     bf.push4(vos.length); 
 
@@ -745,7 +523,7 @@ function vinps_byts(vis)
 {
     // (txid, idx, blk, bid, addr, sign)
 
-    var bf  = ppBuf(vinps_bylen(vis));
+    var bf  = z.Buf(vinps_bylen(vis));
 
     bf.push4(vis.length);
 
@@ -782,7 +560,7 @@ function tx_byts(tx)
     var bvis = vinps_byts(tx.vinps);
     var bvos = vouts_byts(tx.vouts);
 
-    var bf  = ppBuf(tx_bylen(tx));
+    var bf  = z.Buf(tx_bylen(tx));
     bf.pushBuf(bvis);
     bf.pushBuf(bvos);
 
@@ -803,10 +581,11 @@ function tx_make(vis, vos)
     var tx = {vinps:vis, vouts:vos, ts:ts, rn:rn, spent:{}};    // spent is for utxo internals
 
     var txb= tx_byts(tx);
-    var h  = hx(txb);
-    txns[h]= tx;
+    var h  = z.hx(txb);
 
-    db_save_tx(h, tx, txb);
+    txns.set(h,tx);    
+
+    db.save_tx(h, tx, txb);
 
     return h;
 }
@@ -842,7 +621,7 @@ function report_unspent()
         }
         each(gathr, utxos);
 
-        nms=R.keys(funds).sort();
+        nms=z.keys(funds).sort();
     }
 
     function show_funds()
@@ -851,23 +630,22 @@ function report_unspent()
         {
             var k = nms[i]; 
             var v = funds[k];
-            clog('  '+k+' : '+padn(v));
+            z.log('  '+k+' : '+padn(v));
         }
     }
 
     function stats_summ()
     {
         var nutxos = utxos.size;
-        var utxpct = Math.floor(100*nutxos/ntxmined);
 
-        clog();
-        clog('ntrans   : '+padn(ntxmined,10));
-        clog('nutxos   : '+padn(nutxos,10)+' : '+utxpct+'%');
-        clog('val      : '+padn(tot,10));
-        clog('mined    : '+padn(reward*blknum,10));
-        clog();
-        clog('NREPS    : '+padn(NREPS,10));
-        clog('addrs    : '+padn(addrids.length,10));
+        z.log();
+        z.log('ntrans   : '+padn(ntxmined,10));
+        z.log('nutxos   : '+padn(nutxos,10)+' : '+pct(nutxos, ntxmined));
+        z.log('val      : '+padn(tot,10));
+        z.log('mined    : '+padn(reward*blknum,10));
+        z.log();
+        z.log('NREPS    : '+padn(NREPS,10));
+        z.log('addrs    : '+padn(addrids.length,10));
         
         assert(tot==reward*blknum,'bad total cash check');
         assert(blknum==blkchain.length,'bad blockchain length');
@@ -875,22 +653,22 @@ function report_unspent()
 
     // cashflow check
 
-    //clog('cashflows');
+    //z.log('cashflows');
 
     for(var i in nms)
     {
         var k = nms[i]; 
-        //clog('  '+k+' : ');
+        //z.log('  '+k+' : ');
         cflw=cashes[k];
         var t=0;
         for (var j in cflw)
         {
             var v = cflw[j];
-            //clog('    '+padn(v));
+            //z.log('    '+padn(v));
             t+=v;
         }
-        //clog('       -----');
-        //clog('    '+padn(t));
+        //z.log('       -----');
+        //z.log('    '+padn(t));
 
         assert(funds[k]==t,"cashflow mismatch")
     }
@@ -900,10 +678,10 @@ function report_unspent()
     {
         var ts0=ts(); 
         var ks = utxos.keys();
-        utxids = ezsample(ks, 2000);
+        utxids = zsample(ks, 2000);
         var nuids=utxids.length;
         var dts=ts()-ts0;
-        clog('utxo keys list takes    : '+padn(dts));       // can take 120ms for 150k items !!
+        z.log('utxo keys list takes    : '+padn(dts));       // can take 120ms for 150k items !!
     }
 
     var blutxs={};
@@ -928,7 +706,7 @@ function report_unspent()
         }
         each(wlk,utxos);
 
-        clog('\nblock utxo density : ');
+        //z.log('\nblock utxo density : ');
 
         function shbl(bid, b)
         {
@@ -936,14 +714,8 @@ function report_unspent()
             var ntr=blk.txs.length;
 
             var nbl = bld[b] || 0;
-            var d=nbl/ntr;
 
-
-            if (b<NTAIL)
-            {
-                clog('  blk utx : '+padn(b,5)+' : '+padn(d.toFixed(2),5)+' : '+padn(nbl,4)+' / '+padn(ntr,4));
-                //jlog(blutxs[b]);
-            }
+            //z.log('  blk utx : '+padn(b,5)+' : '+pct(nbl, ntr));
         }
         each(shbl, blkchain);
     }
@@ -954,25 +726,25 @@ function report_unspent()
 
         function wl(txs, adr)
         {
-            var txids=R.keys(txs);
+            var txids=z.keys(txs);
             if (!txids.length)
                 return;
             
-            //clog('wallet : '+addrs[adr]); 
+            //z.log('wallet : '+addrs[adr]); 
             function shw(tid)
             {
-                var tx=txns[tid];
-                for (var i in tx.vouts)
+                function fvo(vo)
                 {
-                    var vo=tx.vouts[i];
                     if (vo.addr==adr)
                     {
-                        //clog('  '+tid+' : '+vo.val);
+                        //z.log('  '+tid+' : '+vo.val);
                         totwlt+=vo.val;
                     }
                 }
+                var tx=txns.get(tid);
+                each(fvo, tx.vouts);
             }
-            R.forEach(shw, txids);
+            each(shw, txids);
         }
         each(wl, wallets);
 
@@ -994,15 +766,15 @@ function wlt_sample_txs()
     {
         if (!hodlers[adr])
             users.push(adr);
-        else if (ezrng(100)<10)      // hodlers trade rarely
+        else if (zrng(100)<10)      // hodlers trade rarely
             users.push(adr);
     }
 
     var k = Math.ceil(users.length);
-    var n = ezrng(2*k)+ezrng(k)+ezrng(500)+1;
+    var n = zrng(2*k)+zrng(k)+zrng(500)+1;
     n = Math.min(MAX_BLTXN-1, n);
 
-    var ads=ezsample(users,n);
+    var ads=zsample(users,n);
 
     if (!ads.length)
         return [];
@@ -1011,18 +783,18 @@ function wlt_sample_txs()
     function ptx(adr)
     {
         var wal = wallets.get(adr);
-        var txs = R.keys(wal);
+        var txs = z.keys(wal);
         if (!txs.length)
             return;
 
         // spend from a tx in the users wallet
 
-        var tid = ezpick(txs);
+        var tid = zpick(txs);
         txns.push(tid);
     }
-    R.forEach(ptx,ads);
+    each(ptx, ads);
 
-    txns = R.uniq(txns);
+    txns = z.uniq(txns);
 
     return txns;
 }
@@ -1034,13 +806,12 @@ function utx_catchup()
 {
     // work thru a catchup series [ or start a new one ]
 
-    if (catchups.length)
-        return;                 // one-shot for now
+    //if (catchups.length) return;                 // one-shot for now
 
     var bld={};                 // bln -> utxo cnt
     var blutxs={};              // bln -> [ utxids ]
 
-    var maxblk = Math.floor(NTAIL);
+    var maxblk = Math.floor(TAIL*blknum);
     var maxtns = MAX_BLTXN;
     var ntxall = 0;
 
@@ -1096,27 +867,35 @@ function utx_catchup()
     }
     catchups.push(cxup);
 
-    clog('\nutxo catchup sections : ');
+    z.log('\nutxo catchup sections : ');
 
     function trcxup(cx)
     {
-        clog('  cxup : [ '+padn(cx.blnfr,5)+' - '+padn(cx.blnto,5)+' ] : '+padn(cx.ntxs));
+        z.log('  cxup : [ '+padn(cx.blnfr,5)+' - '+padn(cx.blnto,5)+' ] : '+padn(cx.ntxs));
         function trcxb(txs, nb)
         {
             var ntx=txs.length; 
-            //clog('            '+padn(nb)+' '+padn(ntx));
+            //z.log('            '+padn(nb)+' '+padn(ntx));
         }
         each(trcxb, cx.bltxs);
         
     }
     each(trcxup, catchups);
-    clog('                    '+padn(catchups.length,6)+' : '+padn(ntxs));
 
-    clog('               space saved : '+pct(ntxall-ntxs, ntxmined));
-    clog('               scan only   : '+pct(ntxmined-ntxall+ntxs, ntxmined));
+    z.log('                    '+padn(catchups.length,6)+' : '+padn(ntxs));
 
+    z.log('               space saved : '+pct(ntxall-ntxs, ntxmined));
+    z.log('               scan only   : '+pct(ntxmined-ntxall+ntxs, ntxmined));
 }
 
+function catchups_check()
+{
+    if (catchups.length)
+        return;                 // wait until current catchups batch is injected into blocks
+
+    if (!(blknum%100))
+        utx_catchup();          // generate new catchups every N blocks
+}
 
 function spend_mine()
 {
@@ -1126,33 +905,41 @@ function spend_mine()
     var nuids=utxids.length;
     var dts=ts()-ts0;
 
-    R.times(rand_spend, nuids);
+    z.times(rand_spend, nuids);
     var dtp=ts()-ts0;
 
-    clog('spend :                 : '+padn(dts) + padn(dtp));
+    z.log('spend :                 : '+padn(dts) + padn(dtp)+' ms');
 
     blk_mine();
+
+    catchups_check();
+
+    if (blknum%20==1)               // every N blocks write DB
+    {
+        db.sync();
+    }
 }
 
-///
+function fini()
+{
+    var dtp=ts()-ts0+1;
 
-db_init();
-init_users();
+    report_unspent();
+
+    z.log('tps      : '+padn((1000*ntxmined/dtp).toFixed(0),10));
+
+    db.close();
+}
+
+function init()
+{
+    init_users();
+    blk_mine();
+    z.times(spend_mine, NREPS-1);
+    fini();
+}
+
+
 
 var ts0=ts(); 
-blk_mine();
-R.times(spend_mine, NREPS-1);
-var dtp=ts()-ts0+1;
-
-report_unspent();
-
-clog('tps      : '+padn((1000*ntxmined/dtp).toFixed(0),10));
-
-utx_catchup();
-
-db_close();
-
-///
-
-
-
+db.init(init);
